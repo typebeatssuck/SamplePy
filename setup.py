@@ -12,7 +12,7 @@ setup(
     version="1.0.0",
     author="SamplePy Team",
     author_email="team@samplepy.com",
-    description="A powerful CLI tool for bulk audio operations",
+    description="A powerful TUI tool for bulk audio operations",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/samplepy/samplepy",
@@ -32,10 +32,10 @@ setup(
     ],
     python_requires=">=3.8",
     install_requires=[
-        "typer>=0.9.0",
         "rich>=13.0.0",
         "pydub>=0.25.1",
         "mutagen>=1.46.0",
+        "textual>=0.40.0",
     ],
     extras_require={
         "dev": [
@@ -47,10 +47,10 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "spy=samplepy.main:app",
+            "spy=samplepy.main:main",
         ],
     },
-    keywords="audio, conversion, metadata, organization, cli, bulk-processing",
+    keywords="audio, conversion, metadata, organization, tui, bulk-processing",
     project_urls={
         "Bug Reports": "https://github.com/samplepy/samplepy/issues",
         "Source": "https://github.com/samplepy/samplepy",
