@@ -1,8 +1,8 @@
 """
-Core business logic for SamplePy audio operations
+Core functionality for SamplePy
+Basic file operations and utilities
 """
 
-from .converter import AudioConverter
-from .metadata import MetadataManager
-from .organizer import FileOrganizer
-from .analyzer import AudioAnalyzer 
+from .file_utils import FileUtils
+
+__all__ = ['FileUtils'] 

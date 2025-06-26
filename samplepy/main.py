@@ -1,5 +1,5 @@
 """
-SamplePy - Audio Processing TUI Tool
+SamplePy - Simple File Browser TUI
 Main entry point for the application
 """
 

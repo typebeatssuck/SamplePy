@@ -1,7 +1,7 @@
 """
-CLI module for SamplePy
+Command Line Interface components for SamplePy
 """
 
-from . import tui_minimal
+from .tui_minimal import run_minimal_tui
 
-__all__ = ["tui_minimal"] 
+__all__ = ["run_minimal_tui"] 

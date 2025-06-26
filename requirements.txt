@@ -1,5 +1,1 @@
-rich>=13.0.0
-pydub>=0.25.1
-mutagen>=1.47.0
-pathlib2>=2.3.7
 textual>=0.40.0 
