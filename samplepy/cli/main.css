@@ -1,0 +1,49 @@
+/* A dark, retro-terminal theme */
+
+/* Target the entire screen */
+Screen {
+    background: #0d0d0d; /* Very dark grey */
+    color: #00ff00;      /* Classic green text */
+    /* font-family: 'Courier New', monospace; */ /* Remove or comment out */
+}
+
+/* Style all trees */
+FileTree {
+    background: #1a1a1a;
+    border: round #008800; /* Rounded green border */
+    padding: 1;
+}
+
+/* Style how tree nodes are highlighted */
+Tree > .tree--cursor {
+    background: #00ff00;
+    color: #0d0d0d;
+}
+
+/* Style the utility panel */
+UtilityPanel {
+    border: double #008800;
+    background: #1a1a1a;
+}
+
+/* Style the labels inside the utility panel */
+UtilityPanel Label {
+    padding: 0 1;
+}
+
+/* Style for the selected action label */
+UtilityPanel > #utility-content > .--current-action {
+    background: #00ff00;
+    color: #0d0d0d;
+    text-style: bold;
+}
+
+/* Style for input boxes */
+Input {
+    border: solid #008800;
+    background: #111;
+}
+
+Input:focus {
+    border: solid #00ff00;
+}

@@ -3,490 +3,307 @@ Minimal Text User Interface (TUI) for SamplePy
 Simple, clean implementation focusing on core functionality
 """
 
-from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import Header, Footer, Static, Tree, Label, Button, Input
-from textual.widgets.tree import TreeNode
-from textual.reactive import reactive
-from textual import work
-from textual.binding import Binding
 from pathlib import Path
-from typing import List, Optional
-import os
-from textual.events import Key
-from samplepy.core.file_utils import FileUtils
+from typing import Optional, List, Callable
+
 from textual import on
+from textual.app import App, ComposeResult
+from textual.containers import Container
+from textual.widgets import Header, Footer, Tree, Label, Input
+from textual.widgets.tree import TreeNode
+from textual.message import Message
+from textual.binding import Binding
+from textual.events import Key
 
-class FileTree(Tree):
+from samplepy.core.file_utils import FileUtils
+
+
+class FileTree(Tree[Path]):
     """Tree widget for displaying file system hierarchy"""
-    
-    def __init__(self, **kwargs):
-        super().__init__("File System", **kwargs)
-        self.root_path = Path.cwd()
-        self.current_selection: Optional[Path] = None
-        self.populated_nodes = set()  # Track which nodes have been populated
-    
-    def load_directory(self, path: Path):
-        """Load and display the directory structure"""
-        self.root_path = path
-        self.clear()
-        self.populated_nodes.clear()
-        
-        # Set the root label to the current directory name
-        self.root.label = path.name or str(path)
-        self.root.data = path
-        
-        try:
-            self._populate_node(self.root, path)
-            self.populated_nodes.add(self.root)
-        except Exception as e:
-            # Add error node if we can't access the directory
-            error_node = self.root.add("Error accessing directory")
-            error_node.data = None
-        
-        # Expand the root by default
-        self.root.expand()
-    
-    def _populate_node(self, node: TreeNode, path: Path):
-        """Recursively populate a tree node with directory contents"""
-        try:
-            # Get all items in the directory
-            items = []
-            for item in path.iterdir():
-                items.append(item)
-            
-            # Sort: directories first, then files
-            items.sort(key=lambda x: (not x.is_dir(), x.name.lower()))
-            
-            # Add items to the tree
-            for item in items:
-                child_node = node.add(item.name)
-                child_node.data = item
-                
-                # Mark directories with a folder icon
-                if item.is_dir():
-                    child_node.label = f"\U0001F4C1 {item.name}"
-                else:
-                    child_node.label = f"\U0001F4C4 {item.name}"
-        except PermissionError:
-            # Add permission denied node
-            node.add("\U0001F512 Permission Denied")
-        except Exception:
-            # Add error node
-            node.add("\u274C Error")
-    
-    def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
-        """Handle node expansion - always reload children from disk."""
-        node = event.node
-        if node.data and isinstance(node.data, Path) and node.data.is_dir():
-            # Remove all children before repopulating
-            node.remove_children()
-            self._populate_node(node, node.data)
-            self.populated_nodes.add(node)
-    
-    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
-        """Update current_selection to the highlighted (cursor) node as the user moves."""
-        if event.node.data and isinstance(event.node.data, Path):
-            self.current_selection = event.node.data
-            app = self.app
-            if app:
-                utility_panel = app.query_one("#utility-panel", UtilityPanel)
-                utility_panel.clear_panel()  # Clear panel on focus change
-    
-    def get_selected_path(self) -> Optional[Path]:
-        """Get the currently selected file/directory path"""
-        return self.current_selection
 
-    def get_node_for_path(self, path: Path):
-        # Helper to find the TreeNode for a given path
-        file_tree = self.app.query_one("#file-tree", FileTree) if self.app else None
-        if not file_tree:
-            return None
-        def _find(node):
-            if getattr(node, 'data', None) == path:
-                return node
-            for child in getattr(node, 'children', []):
-                found = _find(child)
-                if found:
-                    return found
-            return None
-        return _find(self.root)
+    def __init__(self, path: Path, **kwargs):
+        super().__init__(path.name or str(path), data=path, **kwargs)
+        self.root_path = path
+
+    def reload(self, new_path: Optional[Path] = None) -> None:
+        """Reload the tree view from the specified path or the current root."""
+        if new_path:
+            self.root_path = new_path
+            self.root.data = new_path
+            self.root.label = new_path.name or str(new_path)
+
+        self.clear()
+        self._populate_node(self.root)
+
+    def _populate_node(self, node: TreeNode[Path]):
+        """Populate a tree node with directory contents"""
+        if not node.data or not node.data.is_dir():
+            return
+
+        try:
+            items = sorted(
+                node.data.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
+            )
+            for item in items:
+                node.add(
+                    f"📁 {item.name}" if item.is_dir() else f"📄 {item.name}",
+                    data=item,
+                    allow_expand=item.is_dir(),
+                )
+        except PermissionError:
+            node.add("🚫 Permission Denied", allow_expand=False)
+        except Exception:
+            node.add("❌ Error", allow_expand=False)
+
+    def on_mount(self) -> None:
+        """When the tree is mounted, populate the root."""
+        self._populate_node(self.root)
+        self.root.expand()
+
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded[Path]) -> None:
+        """Handle node expansion - load children from disk."""
+        # Clear existing children before populating
+        event.node.remove_children()
+        self._populate_node(event.node)
 
 
 class UtilityPanel(Container):
-    """Bottom utility panel for actions only (blank by default)"""
-    
+    """Bottom utility panel for actions and user input."""
+
+    class ActionMessage(Message):
+        """Message to signal an action was requested."""
+        def __init__(self, path: Path, action: str) -> None:
+            self.path = path
+            self.action = action
+            super().__init__()
+
+    class InputMessage(Message):
+        """Message to signal input was submitted."""
+        def __init__(self, value: str, action: str, path: Path) -> None:
+            self.value = value
+            self.action = action
+            self.path = path
+            super().__init__()
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.selected_path = None
-        self.action_index = 0
-        self.actions: list[str] = []
-        self.has_actions = False
-        self.can_focus = True  # Make UtilityPanel focusable
-        self._input_callback = None
-        self._input_context = None
-        self._input_prompt = None
-    
+        self.can_focus = True
+        self._selected_path: Optional[Path] = None
+        self._current_actions: List[str] = []
+        self._input_widget: Optional[Input] = None
+        self._pending_action: Optional[str] = None
+        self._action_index = 0
+
     def compose(self) -> ComposeResult:
-        """Create the utility panel content (blank by default)"""
-        with Container(id="utility-content"):
-            yield Container(id="utility-actions")
+        yield Container(id="utility-content")
 
-    def show_actions(self, path: Optional[Path]):
-        """Show context-specific actions for the selected item in the actions panel."""
-        actions_container = self.query_one("#utility-actions", Container)
-        actions_container.remove_children()
-        self.action_index = 0
-        self.has_actions = False
-        self.actions = []
-        if path is None:
-            return
-        if path.is_dir():
-            self.actions = [
-                "[Enter] Open Directory",
-                "[N] New File",
-                "[F] New Folder",
-                "[Del] Delete Directory",
-                "[R] Rename Directory"
-            ]
-        else:
-            self.actions = [
-                "[Enter] Open File",
-                "[Del] Delete File",
-                "[R] Rename File"
-            ]
-        self.has_actions = bool(self.actions)
+    def show_actions_for(self, path: Optional[Path]) -> None:
+        """Show context-specific actions for the selected item."""
+        self._selected_path = path
+        self._current_actions = []
+        if path:
+            if path.is_dir():
+                self._current_actions = ["New File", "New Folder", "Rename", "Delete"]
+            else:
+                self._current_actions = ["Rename", "Delete"]
         self._render_actions()
-        if self.app:
-            self.app.set_focus(self)  # Explicitly move focus to UtilityPanel
-        self.focus()  # Ensure focus is set to UtilityPanel
 
-    def _render_actions(self):
-        actions_container = self.query_one("#utility-actions", Container)
-        actions_container.remove_children()
-        for i, action in enumerate(self.actions):
-            classes = "selected-action" if i == self.action_index else ""
-            actions_container.mount(Label(action, classes=classes))
+    def _render_actions(self) -> None:
+        """Render the action labels and ensure the panel has focus."""
+        container = self.query_one("#utility-content", Container)
+        container.remove_children()
+        self._input_widget = None
+        for i, action in enumerate(self._current_actions):
+            label = Label(f"▸ {action}" if i == self._action_index else f"  {action}")
+            container.mount(label)
 
-    def clear_panel(self):
-        actions_container = self.query_one("#utility-actions", Container)
-        actions_container.remove_children()
-        self.actions = []
-        self.action_index = 0
-        self.has_actions = False
+        if self._current_actions:
+            self.focus()
+
+    def clear_panel(self) -> None:
+        """Clear the panel and reset state."""
+        self.query_one("#utility-content", Container).remove_children()
+        self._selected_path = None
+        self._current_actions = []
+        self._input_widget = None
+        self._pending_action = None
+        self._action_index = 0
+
+    def show_input_prompt(self, prompt: str, action: str) -> None:
+        """Display an input field for an action."""
+        self._pending_action = action
+        container = self.query_one("#utility-content", Container)
+        container.remove_children()
+        self._input_widget = Input(placeholder=prompt)
+        container.mount(self._input_widget)
+        self._input_widget.focus()
 
     def on_key(self, event: Key) -> None:
-        if not self.has_actions:
+        """Handle key presses for navigating actions."""
+        if self._input_widget or not self._current_actions:
             return
-        action = self.actions[self.action_index] if self.actions else None
-        file_tree = self.app.query_one("#file-tree", FileTree) if self.app else None
-        selected_path = file_tree.get_selected_path() if file_tree else None
-        app = self.app
+
         if event.key == "up":
-            self.action_index = (self.action_index - 1) % len(self.actions)
+            self._action_index = (self._action_index - 1) % len(self._current_actions)
             self._render_actions()
             event.stop()
         elif event.key == "down":
-            self.action_index = (self.action_index + 1) % len(self.actions)
+            self._action_index = (self._action_index + 1) % len(self._current_actions)
             self._render_actions()
             event.stop()
-        elif event.key == "escape":
-            if app:
-                file_tree = app.query_one("#file-tree", FileTree)
-                app.set_focus(file_tree)
-                file_tree.focus()
-            self.clear_panel()
-            event.stop()
         elif event.key == "enter":
-            if action and selected_path:
-                if action.startswith("[Enter] Open Directory"):
-                    # Expand/collapse the folder in the tree
-                    if file_tree:
-                        node = file_tree.get_node_for_path(selected_path)
-                        if node:
-                            node.toggle()
-                        app.set_focus(file_tree)
-                        file_tree.focus()
-                        self.clear_panel()
-                elif action.startswith("[N] New File"):
-                    self._prompt_new_file(selected_path)
-                elif action.startswith("[F] New Folder"):
-                    self._prompt_new_folder(selected_path)
-                elif action.startswith("[Del] Delete"):
-                    self._delete_path(selected_path)
-                elif action.startswith("[R] Rename"):
-                    self._prompt_rename(selected_path)
-                # [Enter] Open File is not implemented
-            event.stop()
-        # Optionally: handle N, F, Del, R as direct shortcuts
-        elif event.key.lower() == "n" and any(a.startswith("[N] New File") for a in self.actions):
-            if selected_path:
-                self._prompt_new_file(selected_path)
-            event.stop()
-        elif event.key.lower() == "f" and any(a.startswith("[F] New Folder") for a in self.actions):
-            if selected_path:
-                self._prompt_new_folder(selected_path)
-            event.stop()
-        elif event.key.lower() == "r" and any(a.startswith("[R] Rename") for a in self.actions):
-            if selected_path:
-                self._prompt_rename(selected_path)
-            event.stop()
-        elif event.key.lower() == "delete" and any(a.startswith("[Del] Delete") for a in self.actions):
-            if selected_path:
-                self._delete_path(selected_path)
+            action = self._current_actions[self._action_index]
+            if self._selected_path:
+                self.post_message(self.ActionMessage(self._selected_path, action))
             event.stop()
 
-    def _prompt_new_file(self, dir_path: Path):
-        # Show input for new file name
-        self._show_input("New file name:", lambda name: self._create_file(dir_path, name))
-
-    def _prompt_new_folder(self, dir_path: Path):
-        # Show input for new folder name
-        self._show_input("New folder name:", lambda name: self._create_folder(dir_path, name))
-
-    def _prompt_rename(self, path: Path):
-        # Show input for new name
-        self._show_input("Rename to:", lambda name: self._rename_path(path, name))
-
-    def _show_input(self, prompt: str, callback):
-        actions_container = self.query_one("#utility-actions", Container)
-        actions_container.remove_children()  # Always clear before adding new input
-        input_widget = Input(placeholder=prompt)
-        actions_container.mount(input_widget)
-        input_widget.focus()
-        self._input_callback = callback
-        self._input_context = input_widget
-        self._input_prompt = prompt
-
+    @on(Input.Submitted)
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if self._input_context and event.input is self._input_context:
-            value = event.value.strip()
-            actions_container = self.query_one("#utility-actions", Container)
-            # Remove previous error/success messages
-            for child in list(actions_container.children)[1:]:
-                child.remove()
-            if not self._input_callback:
-                actions_container.mount(Label("[ERROR] No callback set!"))
-                self._input_context.focus()
-                return
-            if value:
-                result = self._input_callback(value)
-                if result:
-                    self._refresh_and_clear()
-                else:
-                    actions_container.mount(Label("Error: Operation failed. Try again."))
-                    self._input_context.focus()
-            else:
-                actions_container.mount(Label("Error: Invalid input. Try again."))
-                self._input_context.focus()
-
-    def _create_file(self, dir_path: Path, name: str):
-        new_path = dir_path / name
-        result = FileUtils.create_file(new_path)
-        if result:
-            self._refresh_and_clear()
-        return result
-
-    def _create_folder(self, dir_path: Path, name: str):
-        new_path = dir_path / name
-        result = FileUtils.create_folder(new_path)
-        if result:
-            self._refresh_and_clear()
-        return result
-
-    def _delete_path(self, path: Path):
-        result = FileUtils.delete_path(path)
-        if result:
-            self._refresh_and_clear()
-        return result
-
-    def _rename_path(self, path: Path, new_name: str):
-        new_path = path.parent / new_name
-        result = FileUtils.rename_path(path, new_path)
-        if result:
-            self._refresh_and_clear()
-        return result
-
-    def _refresh_and_clear(self):
-        # Refresh file tree and clear panel
-        app = self.app
-        if app:
-            file_tree = app.query_one("#file-tree", FileTree)
-            app.set_focus(file_tree)
-            file_tree.focus()
-            app.load_current_directory()
-        self.clear_panel()
-
-    def _show_message(self, message: str):
-        actions_container = self.query_one("#utility-actions", Container)
-        actions_container.remove_children()
-        actions_container.mount(Label(message))
-        # Clear all input state after error
-        self._input_callback = None
-        self._input_context = None
-        self._input_prompt = None
+        """Handle when the user submits text."""
+        value = event.value.strip()
+        if value and self._pending_action and self._selected_path:
+            self.post_message(self.InputMessage(value, self._pending_action, self._selected_path))
+        else:
+            self.post_message(self.ActionMessage(Path.cwd(), "clear_and_focus_tree"))
 
 
 class SamplePyTUI(App):
     """Simple TUI application for SamplePy"""
-    
-    CSS = """
-    App {
-        background: black;
-        color: white;
-    }
-    
-    #main-container {
-        height: 100%;
-        width: 100%;
-    }
-    
-    #header {
-        height: 3;
-        border-bottom: solid white;
-        padding: 1;
-    }
-    
-    #content {
-        height: 1fr;
-    }
-    
-    #file-panel {
-        height: 70%;
-        border-bottom: solid white;
-    }
-    
-    #file-tree {
-        height: 1fr;
-        border: solid white;
-    }
-    
-    #utility-panel {
-        height: 30%;
-        border: solid white;
-    }
-    
-    #utility-content {
-        height: 100%;
-        /* padding: 1; */
-    }
-    
-    #utility-title {
-        text-align: center;
-        border-bottom: solid white;
-        /* padding: 1; */
-    }
-    
-    #utility-info {
-        /* padding: 1; */
-        text-align: center;
-    }
-    
-    #utility-actions {
-        height: 1fr;
-        /* padding: 1; */
-    }
-    
-    #nav-info, #help-info {
-        text-align: center;
-        /* padding: 1; */
-    }
-    
-    Tree {
-        border: solid white;
-    }
-    
-    Label {
-        color: white;
-    }
-    
-    .selected-action {
-        background: white;
-        color: black;
-        text-style: bold;
-    }
-    """
-    
+
+    CSS_PATH = "main.css"
+
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("r", "refresh", "Refresh"),
-        Binding("enter", "open_selected", "Open"),
+        Binding("r", "refresh_tree", "Refresh"),
         Binding("backspace", "go_back", "Back"),
-        Binding("a", "show_actions", "Actions"),
+        ("a", "show_actions", "Actions"),
     ]
-    
+
     def __init__(self):
         super().__init__()
         self.current_path = Path.cwd()
-        self.path_history = []
-    
+        self.path_history: List[Path] = []
+
     def compose(self) -> ComposeResult:
-        """Create child widgets for the app"""
-        with Container(id="main-container"):
-            yield Label(f"Current: {self.current_path}", id="header")
-            
-            with Container(id="content"):
-                with Container(id="file-panel"):
-                    yield FileTree(id="file-tree")
-                
-                yield UtilityPanel(id="utility-panel")
-    
-    def on_mount(self) -> None:
-        """Called when the app is mounted"""
-        self.load_current_directory()
-    
-    def load_current_directory(self):
-        """Load the current directory into the tree"""
-        file_tree = self.query_one("#file-tree", FileTree)
-        file_tree.load_directory(self.current_path)
-    
+        """Create child widgets for the app."""
+        yield Container(
+            FileTree(self.current_path, id="file-tree"),
+            UtilityPanel(id="utility-panel"),
+            id="main-container"
+        )
+
+    def _get_tree(self) -> FileTree:
+        """Helper to get the file tree widget."""
+        return self.query_one(FileTree)
+
+    def _get_utility_panel(self) -> UtilityPanel:
+        """Helper to get the utility panel widget."""
+        return self.query_one(UtilityPanel)
+
+    def _refresh_ui(self, focus_tree: bool = True) -> None:
+        """Refreshes the UI by reloading the tree and clearing the panel."""
+        self._get_tree().reload()
+        self._get_utility_panel().clear_panel()
+        if focus_tree:
+            self._get_tree().focus()
+
+    # --- Action Handlers ---
+
     def action_quit(self) -> None:
-        """Quit the application"""
         self.exit()
-    
-    def action_refresh(self) -> None:
-        """Refresh the file tree"""
-        self.load_current_directory()
-    
-    def action_open_selected(self) -> None:
-        """Open selected file or directory"""
-        file_tree = self.query_one("#file-tree", FileTree)
-        selected_path = file_tree.get_selected_path()
-        
-        if selected_path:
-            if selected_path.is_dir():
-                # Navigate to directory
-                self.path_history.append(self.current_path)
-                self.current_path = selected_path
-                self.load_current_directory()
-                # Clear utility panel selection
-                utility_panel = self.query_one("#utility-panel", UtilityPanel)
-                utility_panel.clear_panel()
-            else:
-                # File selected - update utility panel
-                utility_panel = self.query_one("#utility-panel", UtilityPanel)
-                # No info or status update
-    
+
+    def action_refresh_tree(self) -> None:
+        self._refresh_ui()
+
     def action_go_back(self) -> None:
-        """Go back to previous directory"""
         if self.path_history:
             self.current_path = self.path_history.pop()
-            self.load_current_directory()
-            
-            # Clear utility panel selection
-            utility_panel = self.query_one("#utility-panel", UtilityPanel)
-            utility_panel.clear_panel()
-    
+            self.sub_title = str(self.current_path)
+            self._get_tree().reload(self.current_path)
+            self._get_utility_panel().clear_panel()
+
     def action_show_actions(self) -> None:
-        """Show actions for the currently highlighted item in the file tree and focus the panel."""
-        file_tree = self.query_one("#file-tree", FileTree)
-        utility_panel = self.query_one("#utility-panel", UtilityPanel)
-        selected_path = file_tree.get_selected_path()
-        utility_panel.show_actions(selected_path)
-        # Focus is now handled in show_actions
+        tree = self._get_tree()
+        if tree.cursor_node and tree.cursor_node.data:
+            self._get_utility_panel().show_actions_for(tree.cursor_node.data)
+
+    # --- Event Handlers (@on decorator) ---
+
+    @on(Tree.NodeSelected)
+    def on_tree_node_selected(self, event: Tree.NodeSelected[Path]) -> None:
+        path = event.node.data
+        if path and path.is_dir():
+            self.path_history.append(self.current_path)
+            self.current_path = path
+            self.sub_title = str(self.current_path)
+            self._get_tree().reload(self.current_path)
+            self._get_utility_panel().clear_panel()
+        elif path:
+            self.action_show_actions()
+
+    @on(UtilityPanel.ActionMessage)
+    async def handle_utility_action(self, message: UtilityPanel.ActionMessage) -> None:
+        utility_panel = self._get_utility_panel()
+        
+        if message.action == "clear_and_focus_tree":
+            utility_panel.clear_panel()
+            self._get_tree().focus()
+            return
+            
+        action_prompts = {
+            "New File": "Enter name for new file:",
+            "New Folder": "Enter name for new folder:",
+            "Rename": "Enter new name:",
+        }
+        
+        if message.action in action_prompts:
+            utility_panel.show_input_prompt(action_prompts[message.action], message.action)
+        elif message.action == "Delete":
+            success = FileUtils.delete_path(message.path)
+            if success:
+                self._refresh_ui()
+            else:
+                self.bell()
+
+    @on(UtilityPanel.InputMessage)
+    async def handle_utility_input(self, message: UtilityPanel.InputMessage) -> None:
+        path = message.path
+        new_name = message.value
+
+        if message.action == "New File":
+            success = FileUtils.create_file(path / new_name)
+        elif message.action == "New Folder":
+            success = FileUtils.create_folder(path / new_name)
+        elif message.action == "Rename":
+            success = FileUtils.rename_path(path, path.with_name(new_name))
+        else:
+            return
+
+        if success:
+            self._refresh_ui()
+        else:
+            self.bell()
+
+    def _create_file(self, dir_path: Path, name: str):
+        new_path = dir_path / name
+        return FileUtils.create_file(new_path)
+
+    def _create_folder(self, dir_path: Path, name: str):
+        new_path = dir_path / name
+        return FileUtils.create_folder(new_path)
+
+    def _delete_path(self, path: Path):
+        return FileUtils.delete_path(path)
+
+    def _rename_path(self, path: Path, new_name: str):
+        new_path = path.parent / new_name
+        return FileUtils.rename_path(path, new_path)
 
 
 def run_minimal_tui():
-    """Run the minimal TUI"""
+    """Run the minimal TUI."""
     app = SamplePyTUI()
-    app.run() 
+    app.run()
+
+if __name__ == "__main__":
+    run_minimal_tui()
